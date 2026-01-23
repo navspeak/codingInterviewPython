@@ -22,7 +22,15 @@ __consumer_offsets:
 G1 resumes at offset 3
 G2 must use earliest / latest / none 
 ```
-
+```
+Partition P0 log:
+offset 0 → MSG1
+offset 1 → MSG2
+offset 2 → MSG3
+offset 3 → MSG4
+So: Last record offset = 3
+Log-end offset (LEO) = 4
+```
 
 👉 auto.offset.reset will be consulted
 
