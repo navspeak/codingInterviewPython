@@ -106,10 +106,10 @@ public class OrderProducer {
     private final Counter successCounter;
     private final Counter failureCounter;
 
-    public OrderProducer(KafkaTemplate<String, String> kafkaTemplate, MeterRegistry registry) {
+    public OrderProducer(KafkaTemplate<String, String> kafkaTemplate/*, MeterRegistry registry*/) {
         this.kafkaTemplate = kafkaTemplate;
-        this.successCounter = Counter.builder("orders.sent.success").register(registry);
-        this.failureCounter = Counter.builder("orders.sent.failure").register(registry);
+        // this.successCounter = Counter.builder("orders.sent.success").register(registry);
+        // this.failureCounter = Counter.builder("orders.sent.failure").register(registry);
     }
 
     @Retryable(
@@ -119,20 +119,67 @@ public class OrderProducer {
     )
     public void sendMessage(String message) {
         // .get() makes it synchronous so @Retryable can catch the exception
-        try {
-            kafkaTemplate.send("orders-topic", message).get();
-            successCounter.increment();
-            log.info("Message sent successfully");
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
+        kafkaTemplate.send("orders-topic", message).get();
+        // successCounter.increment();
     }
 
+/*
+Improving Reliability without the DLT
+    - If you want to avoid the "DLT may fail too" headache entirely, you can use the Local Database Pattern (Outbox Pattern):
+    - Save to DB: First, save the order to your Postgres/MySQL database in an OUTBOX table.
+    - Send to Kafka: Try to send to Kafka.
+    - Update DB: If Kafka acknowledges, mark the DB record as SENT.
+    - Background Retry: A scheduled task looks for any record in the DB that is still PENDING after 5 minutes and tries to resend it.
+*/
     @Recover
     public void recover(Exception e, String message) {
         log.error("All retries failed. Sending to DLT: {}", message);
         failureCounter.increment();
         kafkaTemplate.send("orders-topic.DLT", message);
+    }
+
+    // Fast and informative, but NO automatic @Retryable support
+    public void sendMessageAsync(String message) {
+    kafkaTemplate.send("orders-topic", message)
+        .whenComplete((result, ex) -> {
+            if (ex != null) {
+                // You'd have to handle retry logic manually here
+                log.error("Background failure: " + ex.getMessage());
+            }
+        });
+}
+}
+
+// Note: Instead of manual Counter, we can have use Spring Kafka provided a MicrometerProducerListener 
+// that automatically hooks into the KafkaTemplate to track successes and failures (see below)
+```
+
+```java
+/*
+Once this listener is attached, Micrometer will automatically generate these tags for every send attempt:
+    - kafka.producer.record.send.total (Counter)
+    - kafka.producer.record.errors.total (Counter)
+Tags: It will automatically include tags like topic, so you can filter your Grafana dashboard by topic="orders-topic" 
+without writing a single line of business logic for it.
+*/
+import io.micrometer.core.instrument.MeterRegistry;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.core.DefaultKafkaProducerFactory;
+import org.springframework.kafka.core.MicrometerProducerListener;
+import org.springframework.kafka.core.ProducerFactory;
+
+@Configuration
+public class KafkaMetricsConfig {
+
+    @Bean
+    public ProducerFactory<String, String> producerFactory(
+            MeterRegistry meterRegistry, 
+            DefaultKafkaProducerFactory<String, String> factory) {
+        
+        // This line automates the success/failure tracking
+        factory.addListener(new MicrometerProducerListener<>(meterRegistry));
+        return factory;
     }
 }
 ```
@@ -172,152 +219,7 @@ public class KafkaTopicHealthIndicator implements HealthIndicator {
     }
 }
 ```
-Here is the consolidated, production-ready Spring Boot Producer. This setup accounts for your restricted environment (no auto-create permissions), incorporates retries with recovery, and includes health monitoring.
 
-1. pom.xml
-Includes Web, Kafka, AOP (for Retry), and Actuator (for Metrics).
-
-XML
-<dependencies>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-web</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.kafka</groupId>
-        <artifactId>spring-kafka</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-aop</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.retry</groupId>
-        <artifactId>spring-retry</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-actuator</artifactId>
-    </dependency>
-    <dependency>
-        <groupId>io.micrometer</groupId>
-        <artifactId>micrometer-registry-prometheus</artifactId>
-    </dependency>
-</dependencies>
-2. application.yml
-Configured for idempotence, fail-fast behavior, and metrics exposure.
-
-```yml
-spring:
-  kafka:
-    bootstrap-servers: localhost:9092
-    admin:
-      auto-create: false # Restricted env: don't try to create topics on startup
-    producer:
-      acks: all
-      enable.idempotence: true
-      key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.apache.kafka.common.serialization.StringSerializer
-      properties:
-        max.block.ms: 5000 # Don't hang if topic is missing
-        delivery.timeout.ms: 30000
-        max.in.flight.requests.per.connection: 5
-
-management:
-  endpoints:
-    web:
-      exposure:
-        include: health, prometheus
-  endpoint:
-    health:
-      show-details: always
-```
-3. Producer Service with Retry & Recovery
-Handles the business logic, retries on failure, and moves "dead" messages to a DLT.
-
-```Java
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.kafka.core.KafkaTemplate;
-import org.springframework.retry.annotation.Backoff;
-import org.springframework.retry.annotation.Recover;
-import org.springframework.retry.annotation.Retryable;
-import org.springframework.stereotype.Service;
-
-@Service
-public class OrderProducer {
-    private static final Logger log = LoggerFactory.getLogger(OrderProducer.class);
-    private final KafkaTemplate<String, String> kafkaTemplate;
-    private final Counter successCounter;
-    private final Counter failureCounter;
-
-    public OrderProducer(KafkaTemplate<String, String> kafkaTemplate, MeterRegistry registry) {
-        this.kafkaTemplate = kafkaTemplate;
-        this.successCounter = Counter.builder("orders.sent.success").register(registry);
-        this.failureCounter = Counter.builder("orders.sent.failure").register(registry);
-    }
-
-    @Retryable(
-        retryFor = { Exception.class },
-        maxAttempts = 3,
-        backoff = @Backoff(delay = 2000, multiplier = 2)
-    )
-    public void sendMessage(String message) {
-        // .get() makes it synchronous so @Retryable can catch the exception
-        try {
-            kafkaTemplate.send("orders-topic", message).get();
-            successCounter.increment();
-            log.info("Message sent successfully");
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    @Recover
-    public void recover(Exception e, String message) {
-        log.error("All retries failed. Sending to DLT: {}", message);
-        failureCounter.increment();
-        kafkaTemplate.send("orders-topic.DLT", message);
-    }
-}
-```
-4. Custom Health Indicator
-Since auto-create is false, this component checks if the topic exists so your app status reflects reality.
-
-Java
-import org.apache.kafka.clients.admin.AdminClient;
-import org.apache.kafka.clients.admin.ListTopicsOptions;
-import org.springframework.boot.actuate.health.Health;
-import org.springframework.boot.actuate.health.HealthIndicator;
-import org.springframework.kafka.core.KafkaAdmin;
-import org.springframework.stereotype.Component;
-import java.util.concurrent.TimeUnit;
-
-@Component
-public class KafkaTopicHealthIndicator implements HealthIndicator {
-    private final KafkaAdmin kafkaAdmin;
-
-    public KafkaTopicHealthIndicator(KafkaAdmin kafkaAdmin) {
-        this.kafkaAdmin = kafkaAdmin;
-    }
-
-    @Override
-    public Health health() {
-        try (AdminClient client = AdminClient.create(kafkaAdmin.getConfigurationProperties())) {
-            var topics = client.listTopics(new ListTopicsOptions().timeoutMs(2000))
-                               .names().get(2, TimeUnit.SECONDS);
-            
-            if (topics.contains("orders-topic")) {
-                return Health.up().withDetail("topic", "orders-topic").build();
-            }
-            return Health.down().withDetail("error", "Topic 'orders-topic' missing").build();
-        } catch (Exception e) {
-            return Health.down(e).build();
-        }
-    }
-}
 5. REST Controller & Config: 
 The entry point and the required annotation to enable the retry logic.
 
