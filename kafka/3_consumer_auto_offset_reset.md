@@ -34,6 +34,24 @@ Log-end offset (LEO) = 4
 
 👉 auto.offset.reset will be consulted
 
+For a (group, partition) to have no offset, it is sufficient that the consumer which last owned that partition never committed an offset — regardless of how many other consumers exist.
+
+### How G2 could have gotten into no offset situation
+
+1. Scenario 1: Single consumer, crashes before commit
+2. Scenario 2: Multiple consumers, but partition owner crashes
+    * G2 has C1 (owns P0) and C2 (owns P1)
+    * C1 process P0 but crashes, C2 healthy but never owned P0
+    ```
+    (G2, orders, P0) → ❌
+    (G2, orders, P1) → ✅
+    ```
+3. Scenario 3: Consumers running, but commits disabled.
+    * consumers run for long hrs. Messages are processed. App is restarted clearly
+    * Offsets were never written
+4. Rebalance before first commit
+5. Offset retention expiration
+
 ### Real production example (very common incident) Scenario
 - Consumer group orders-svc
 ```
