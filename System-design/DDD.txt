@@ -132,3 +132,65 @@ Why didn't you just wait for the next PI to do it properly?
 * The business risk of a 'Ghost Disbursement' was too high to ignore for three months.
   As a developer, I had to find a way to provide the safety of a CP system within the constraints of our current AP infrastructure. 
   The sidecar was the bridge that allowed us to be both safe and agile.
+
++----------+--------------------------------------+---------------------------------------+
+|Feature   |Aggregate Root (e.g., Deal)           | Child Entity (e.g., Facility)         |
++----------+--------------------------------------+---------------------------------------+
+|Identity  |Global ID (UUID/Deal Number)          |Local ID (Only unique inside the Deal) |
+|Repository|Has its own Repository                |No Repository                          |
+|Deletion  |Can be deleted directly               |Only deleted via the Root              |
+|Access    |Publicly accessible by other services |Private; hidden inside the Root        |
++----------+--------------------------------------+---------------------------------------+
+
+
++----------------+-------------------+-----------------------------------------+
+| AGGREGATE ROOT | INTERNAL CHILDREN | BUSINESS RULE (INVARIANT)               |
++----------------+-------------------+-----------------------------------------+
+| Deal           | Facility,         | Total Facility amounts must not exceed  |
+|                | Fees              | the approved Deal limit.                |
++----------------+-------------------+-----------------------------------------+
+| Credit         | Covenants,        | A 'Signed' agreement cannot have its    |
+| Agreement      | Clauses           | interest rate modified.                 |
++----------------+-------------------+-----------------------------------------+
+| Disbursement   | Payment           | Payment cannot be executed unless the   |
+|                | Instructions      | 'Checker' status is APPROVED.           |
++----------------+-------------------+-----------------------------------------+
+| Sidecar Lock   | (Metadata Only)   | If a DEAL_ID exists here, any CANCEL    |
+| (Shadow State) |                   | request on the Deal Root must fail.     |
++----------------+-------------------+-----------------------------------------+
+
+Why the "No Sharing" Rule is Critical
+-------------------------------------
+A Facility cannot belong to two Roots. If you tried to share it, your SQL and Repository logic would look like a mess.
+
+Here is how the Repository maintains that boundary in a clean way:
+-------------------------------------------------------------------
+
++---------------------------+--------------------------------------------------+
+| ACTION                    | HOW THE REPOSITORY HANDLES IT                    |
++---------------------------+--------------------------------------------------+
+| Load a Facility           | Only via DealRepo: GetDeal(id).Facilities[0]     |
++---------------------------+--------------------------------------------------+
+| Update a Covenant         | Load the Agreement Root -> Change Cov -> Save    |
++---------------------------+--------------------------------------------------+
+| Delete a Fee              | Remove from Deal object -> Save Deal Root        |
++---------------------------+--------------------------------------------------+
+| Cross-Root Reference      | Store 'Deal_ID' inside the Disbursement table    |
++---------------------------+--------------------------------------------------+
+
+The "Shared Child" Conflict 
+---------------------------
+Why you didn't just let the Disbursement service update the Facility directly?
+
+[ Disbursement Service ]         [ Credit Agreement Service ]
+          |                                  |
+          | (Command)                        | (Root)
+          +---> [ Disbursement Root ]        +---> [ Deal Root ]
+                        |                              |
+                        | (References ID)              | (Owns)
+                        +----------------------------> [ Facility ]
+                                                       [ Covenant ]
+
+* By referencing the Deal Root by ID rather than sharing the Facility entity, we ensured that the Credit Agreement service
+  remained the sole 'source of truth' for the loan's financial structure.
+  This prevented the Disbursement service from accidentally violating a credit limit or a covenant check.
