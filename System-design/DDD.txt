@@ -67,3 +67,68 @@ You answer: "That is where we implemented the 'Reservation Pattern'—the status
 check actually places a 'Locked' status on the Agreement until the 
 Disbursement service acknowledges completion via Kafka."
 ================================================================================
+
+
+================================================================================
+         IMPROVED ON ABOVE CASE STUDY: THE LOAN DISBURSEMENT CONSISTENCY GAP
+================================================================================
+
+[1. THE CONTEXT & THE MISS]
+---------------------------
+* PROJECT: Loan Application System (DDD Microservices via Kafka & IBM Blueworks).
+* THE GAP: During PI Planning/Grooming, the requirement stated that "Disbursement
+  happens after Signing." It was not explicitly stated that a "Signed" deal 
+  could be "Voided" or "Cancelled" by an Admin override.
+* THE DISCOVERY: During the sprint, granular discussions revealed this "Implicit"
+  business rule. If a cancellation happened while a disbursement was in flight, 
+  the bank faced significant financial risk (Ghost Disbursement).
+
+[2. THE ARCHITECTURAL CONFLICT]
+-------------------------------
+* ARCHITECT: Pushed for "Pure DDD/Asynchronous" (AP). Argued that services 
+  should only react to Kafka events to avoid Temporal Coupling.
+* YOUR STANCE: Argued for "Strong Consistency" (CP). You identified that Kafka 
+  lag created a "window of risk" where the Disbursement service would act on 
+  stale "Signed" data while a "Cancel" event was still in the queue.
+
+[3. THE BOTTLENECK (GOVERNANCE)]
+--------------------------------
+* DATA RIGIDITY: The Deal Data Model and Avro Schemas were locked for the ART 
+  cycle. Adding a "LOCKED" status to the global Ref Data ENUM required a 
+  Governance Review that would delay the release by months.
+
+[4. THE RESOLUTION (THE STAR ACTION)]
+-------------------------------------
+* COLLABORATION: You negotiated with the Credit Agreement team. They admitted 
+  the cancellation rule was implicit and agreed to help influence Data 
+  Architecture for the next PI.
+* TACTICAL SOLUTION (SIDECAR): To deliver on time, you implemented a 
+  "Sidecar State Store"—a private table in the Agreement Service DB to track 
+  "In-Flight Reservations" without changing the global Avro schema.
+* HYBRID ORCHESTRATION: The Workflow (IBM Blueworks) was configured to perform 
+  a synchronous "Reservation" call to this sidecar before triggering the 
+  Disbursement, effectively "locking" the deal.
+
+[5. THE OUTCOME]
+----------------
+* SUCCESS: Zero "Ghost Disbursements" occurred.
+* TECH DEBT: A formal ticket was created to promote the "LOCKED" status to the 
+  global Ref Data and update the Avro schemas in the next ART cycle.
+* LESSON: DDD boundaries are social as much as technical; pragmatism is 
+  required when "Purity" conflicts with "Financial Risk."
+================================================================================
+
+How to deliver the "Sidecar" and "Tech Debt" part in the interview?
+================================================================================
+* When the requirement surfaced mid-sprint, we were in a tough spot because the Data Model 
+  was already finalized for the ART cycle. I suggested that instead of a global schema change,
+  we use an Internal Sidecar Table to manage the 'Reservation' lock. 
+  This was a tactical move that allowed us to meet the security requirement immediately. 
+  We then socialized this with the Data Architecture team as a 'Tech Debt' item, ensuring that in the next PI,
+  the 'LOCKED' status would be promoted to the core Deal model and the shared Avro schemas."
+
+Why didn't you just wait for the next PI to do it properly?
+================================================================================
+* The business risk of a 'Ghost Disbursement' was too high to ignore for three months.
+  As a developer, I had to find a way to provide the safety of a CP system within the constraints of our current AP infrastructure. 
+  The sidecar was the bridge that allowed us to be both safe and agile.
