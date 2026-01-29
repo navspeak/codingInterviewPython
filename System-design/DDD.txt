@@ -1,0 +1,69 @@
+================================================================================
+          ARCHITECTURAL SUMMARY: DDD, MICROSERVICES, & THE LOAN CASE
+================================================================================
+
+[1. KEY CONCEPTS DEFINED]
+--------------------------------------------------------------------------------
+* TEMPORAL COUPLING: When Service A requires Service B to be online/responsive 
+                     at the same time to complete a task (Synchronous HTTP).
+* SAGA (ORCHESTRATED): A distributed transaction pattern where a central "brain"
+                       (like your BPM) manages steps and triggers "undos" 
+                       (Compensations) if a step fails.
+* RESERVATION PATTERN: A "soft-lock" where a resource is marked "Pending" to 
+                       prevent other actions until a final confirmation occurs.
+* ACL (ANTI-CORRUPTION): A translation layer that prevents one domain's messy 
+                         models from polluting another Bounded Context.
+* CP vs AP (CAPS): 
+    - CP: Consistency/Partition (Correctness above all).
+    - AP: Availability/Partition (The system stays up, even if data is "stale").
+
+[2. THE CORE CONFLICT]
+--------------------------------------------------------------------------------
+ARCHITECT'S VIEW (AP/Pure DDD)     |  YOUR VIEW (CP/Pragmatic)
+-----------------------------------|--------------------------------------------
+Focus: Service Autonomy            |  Focus: Financial Risk / Data Correctness
+Tool: Kafka Events (Async)         |  Tool: Status Checks (Sync)
+Pros: Scalable, Resilient          |  Pros: No "Ghost Disbursements"
+Cons: Risk of Eventual Consistency |  Cons: Temporal Coupling
+
+================================================================================
+                    THE STAR RESPONSE (FOR THE INTERVIEW)
+================================================================================
+
+SITUATION:
+    "In my Loan Application project, we used DDD-based microservices. We had 
+    separate services for Credit Agreements and Disbursements, with logic managed 
+    by an IBM Blueworks workflow. The business requirement was strict: we could 
+    never disburse funds if an agreement was breached or cancelled (a CP need)."
+
+TASK:
+    "The challenge was validating the Agreement’s status before disbursement. 
+    My architect pushed for 'pure' DDD autonomy where services communicated 
+    via Kafka events. I was concerned that the lag in 'Eventual Consistency' 
+    could lead to a 'Ghost Disbursement'—sending money against a cancelled 
+    agreement because the event hadn't arrived yet."
+
+ACTION:
+    "I initially proposed a synchronous API call for a real-time check. The 
+    architect blocked this to avoid 'Temporal Coupling.' To resolve this, I 
+    proposed a 'Hybrid Orchestration' model. We moved the 'Consistency Gate' 
+    to the Workflow Orchestrator (IBM Blueworks). We configured the orchestrator 
+    to perform a synchronous 'Pre-Flight Check' against the Agreement Service 
+    at the moment the 'Checker' approved the task. This acted as our 
+    Saga Coordinator."
+
+RESULT:
+    "This was a 'best of both worlds' outcome. We maintained Bounded Context 
+    autonomy (the Disbursement service didn't need to know Agreement internals), 
+    but we ensured Strong Consistency at the process level. The architect was 
+    satisfied we avoided a 'Distributed Monolith,' and the business was 
+    satisfied we eliminated financial risk. It proved that in banking, 
+    business correctness must sometimes guide architectural purity."
+
+================================================================================
+[FINAL PRO-TIP]
+If they ask: "What if the status changes AFTER the check?" 
+You answer: "That is where we implemented the 'Reservation Pattern'—the status 
+check actually places a 'Locked' status on the Agreement until the 
+Disbursement service acknowledges completion via Kafka."
+================================================================================

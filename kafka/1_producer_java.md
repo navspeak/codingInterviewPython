@@ -135,6 +135,7 @@ public class OrderProducer {
     public void recover(Exception e, String message) {
         log.error("All retries failed. Sending to DLT: {}", message);
         // failureCounter.increment();
+        // if DLT also fails, we may add to a local file
         kafkaTemplate.send("orders-topic.DLT", message);
     }
 
@@ -143,7 +144,7 @@ public class OrderProducer {
     kafkaTemplate.send("orders-topic", message)
         .whenComplete((result, ex) -> {
             if (ex != null) {
-                // You'd have to handle retry logic manually here
+                // You'd have to handle retry logic manually here like send to DLT
                 log.error("Background failure: " + ex.getMessage());
             }
         });
@@ -319,19 +320,24 @@ public class OrderService {
 
     @Transactional
     public void placeOrder(OrderRequest request) {
-        // 1. Save the actual business data
-        Order order = new Order(request.getItem(), request.getAmount());
+        // 1. Generate the ID upfront so it's consistent across the whole system - IdempotencyKey
+        UUID orderId = UUID.randomUUID();
+
+        // 2. Save the Order with that ID
+        Order order = new Order();
+        order.setId(orderId); 
+        order.setItem(request.getItem());
+        order.setAmount(request.getAmount());
         orderRepository.save(order);
 
-        // 2. Save the message to the Outbox table instead of calling Kafka
+        // 3. Save the Outbox message using the SAME ID
         OutboxMessage outboxMessage = new OutboxMessage();
+        outboxMessage.setId(orderId); // The "Glue" for deduplication later
         outboxMessage.setTopic("orders-topic");
         outboxMessage.setPayload(serialize(order)); 
         outboxMessage.setCreatedAt(LocalDateTime.now());
         
         outboxRepository.save(outboxMessage);
-        
-        // At this point, even if the app crashes, the data is safe in the DB.
     }
 }
 // 3. The Message Relay (The Poller)
