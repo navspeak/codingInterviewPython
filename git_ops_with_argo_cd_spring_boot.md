@@ -254,3 +254,200 @@ It is about:
 
 Boring on purpose.
 
+
+---
+
+## 13. Repo structure (tailored, end-to-end)
+
+Below is a **realistic, end-to-end repo layout** matching what we discussed.
+
+### Application repo (Spring Boot)
+
+```
+lending-app/
+├── src/main/java/
+├── src/test/java/
+├── Dockerfile
+├── pom.xml
+└── .github/
+    └── workflows/
+        └── ci.yml
+```
+
+**Responsibilities**
+- Build & test Java code
+- Build container image
+- Push image to registry
+
+This repo has **no Kubernetes manifests**.
+
+---
+
+### GitOps repo (desired runtime state)
+
+```
+lending-gitops/
+├── apps/
+│   └── lending-app/
+│       ├── base/
+│       │   ├── deployment.yaml
+│       │   ├── service.yaml
+│       │   └── kustomization.yaml
+│       └── overlays/
+│           ├── dev/
+│           │   └── kustomization.yaml
+│           └── qa/
+│               └── kustomization.yaml
+└── argo-apps/
+    └── lending-app-dev.yaml
+```
+
+**Key points**
+- `base/` never changes often
+- `overlays/*` change per environment
+- image tag changes happen only in overlays
+
+---
+
+## 14. ASCII diagrams
+
+### High-level GitOps flow
+
+```
+┌────────────┐
+│ Developer  │
+└─────┬──────┘
+      │  git push
+      v
+┌────────────┐
+│ App Repo   │  (Spring Boot)
+└─────┬──────┘
+      │  CI: build & push image
+      v
+┌────────────┐
+│ Registry   │  lending-app:<sha>
+└─────┬──────┘
+      │
+      │  manual Git change
+      v
+┌────────────┐
+│ GitOps Repo│  (image tag updated)
+└─────┬──────┘
+      │
+      │  watched by Argo CD
+      v
+┌────────────┐
+│ Argo CD    │
+└─────┬──────┘
+      │  kubectl apply
+      v
+┌────────────┐n│ Kubernetes │
+│ Deployment │
+└────────────┘
+```
+
+---
+
+### Dev → QA promotion
+
+```
+GitOps Repo
+
+apps/lending-app/overlays/dev  ---> image: abc123
+apps/lending-app/overlays/qa   ---> image: xyz999
+
+Promotion = copy known-good image tag from dev to qa
+```
+
+---
+
+## 15. FAQ / Gotchas
+
+### Q: Why not let CI update the GitOps repo automatically?
+**A:** You can, but manual updates:
+- enforce human approval
+- prevent accidental prod deploys
+- give cleaner audit trails
+
+Many regulated orgs prefer manual promotion.
+
+---
+
+### Q: What if someone edits Kubernetes resources directly?
+**A:** Argo CD will revert them back to Git state.
+
+This is called **self-healing** and is a core GitOps feature.
+
+---
+
+### Q: Where do secrets live?
+**A:** Not in plain Git. Common patterns:
+- sealed-secrets
+- SOPS-encrypted YAML
+- external secret operators
+
+GitOps repo stores *references*, not raw secrets.
+
+---
+
+### Q: Who owns the GitOps repo?
+**A:** Usually:
+- platform / SRE team owns structure
+- app teams own their app folders
+
+This prevents teams from breaking each other.
+
+---
+
+### Q: Is Argo CD doing deployments or Kubernetes?
+**A:** Kubernetes does deployments.
+
+Argo CD only:
+- detects Git drift
+- applies manifests
+
+---
+
+### Q: How do rollbacks work exactly?
+**A:**
+1. `git revert` the image-tag commit
+2. push
+3. Argo CD syncs back automatically
+
+No special rollback tooling required.
+
+---
+
+## 16. GitOps for Architects (short version)
+
+### The model
+- CI builds immutable artifacts
+- Git declares desired runtime state
+- Argo CD reconciles continuously
+
+### Why it scales
+- no shared deployment credentials
+- no snowflake clusters
+- consistent promotion model
+
+### Why it’s safe
+- Git is auditable
+- rollbacks are deterministic
+- environments are explicit
+
+### One-liner for leadership
+> “We separated build from deploy. Git defines what runs, and Argo CD enforces it.”
+
+---
+
+## 17. Final takeaway
+
+GitOps works best when it is:
+- boring
+- explicit
+- human-controlled
+
+Argo CD is not magic.
+
+It is a **Git-to-cluster reconciliation engine**.
+
